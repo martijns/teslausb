@@ -5,6 +5,7 @@ log "Moving clips to archive..."
 NUM_FILES_MOVED=0
 NUM_FILES_FAILED=0
 NUM_FILES_DELETED=0
+NUM_FILES_DUPLICATES=0
 
 function connectionmonitor {
   while true
@@ -58,7 +59,12 @@ function moveclips() {
       else
         log "Moving '$SUB/$file_name'"
         outdir=$(dirname "$file_name")
-        if mv -f "$ROOT/$file_name" "$ARCHIVE_MOUNT/$SUB/$outdir"
+        if [ -e "$ARCHIVE_MOUNT/$SUB/$file_name" -a $(stat -c%s "$ARCHIVE_MOUNT/$SUB/$file_name") -eq $size ]
+        then
+          log "File '$SUB/$file_name' already exists with correct size"
+          rm "$ROOT/$file_name"
+          NUM_FILES_DUPLICATES=$((NUM_FILES_DUPLICATES + 1))
+        elif mv -f "$ROOT/$file_name" "$ARCHIVE_MOUNT/$SUB/$outdir"
         then
           log "Moved '$SUB/$file_name'"
           NUM_FILES_MOVED=$((NUM_FILES_MOVED + 1))
@@ -75,6 +81,18 @@ function moveclips() {
 
 connectionmonitor $$ &
 
+# check old mounts for previous sync attempts that may have failed
+for clipdir in $(find /backingfiles/snapshots/ -type d -name SavedClips -or -name SentryClips | sort -u)
+do
+  log "Archiving clips from a previous failed attempt: $clipdir"
+  MNTPOINT=$(echo "$clipdir" | sed -e 's/\/TeslaCam.*//')
+  mount -o remount,rw "$MNTPOINT"
+  moveclips "$clipdir" '*'
+  rmdir --ignore-fail-on-non-empty "$clipdir"/* || true
+  rmdir --ignore-fail-on-non-empty "$clipdir" || true
+  mount -o remount,ro "$MNTPOINT"
+done
+
 # new file name pattern, firmware 2019.*
 moveclips "$CAM_MOUNT/TeslaCam/SavedClips" '*'
 
@@ -86,11 +104,11 @@ kill %1
 # delete empty directories under SavedClips and SentryClips
 rmdir --ignore-fail-on-non-empty "$CAM_MOUNT/TeslaCam/SavedClips"/* "$CAM_MOUNT/TeslaCam/SentryClips"/* || true
 
-log "Moved $NUM_FILES_MOVED file(s), failed to copy $NUM_FILES_FAILED, deleted $NUM_FILES_DELETED."
+log "Moved $NUM_FILES_MOVED file(s), failed to copy $NUM_FILES_FAILED, deleted $NUM_FILES_DELETED, with $NUM_FILES_DUPLICATES duplicates."
 
 if [ $NUM_FILES_MOVED -gt 0 ]
 then
-  /root/bin/send-push-message "TeslaUSB:" "Moved $NUM_FILES_MOVED dashcam file(s), failed to copy $NUM_FILES_FAILED, deleted $NUM_FILES_DELETED."
+  /root/bin/send-push-message "TeslaUSB:" "Moved $NUM_FILES_MOVED dashcam file(s), failed to copy $NUM_FILES_FAILED, deleted $NUM_FILES_DELETED, with $NUM_FILES_DUPLICATES duplicates."
 fi
 
 log "Finished moving clips to archive."
